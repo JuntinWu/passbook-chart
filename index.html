@@ -43,7 +43,8 @@ section.view{padding:18px max(2.5vw,14px) 40px;display:flex;flex-direction:colum
 .title .nm{font-size:20px;font-weight:700}.title .px{font-size:20px;font-variant-numeric:tabular-nums}
 .up{color:var(--up)}.down{color:var(--down)}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.stats div{background:var(--panel);padding:10px 14px}.stats dt{font-size:13px;color:var(--mute)}.stats dd{margin:2px 0 0;font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stats div{background:var(--panel);padding:10px 14px}.stats dt{font-size:13px;color:var(--mute)}.stats .sub{display:block;font-size:13px;font-weight:500;color:var(--mute);white-space:normal}
+.stats dd{margin:2px 0 0;font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px}
 .bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--line)}
 .seg{display:flex;gap:2px;background:var(--soft);padding:3px;border-radius:8px}
@@ -107,7 +108,7 @@ aside{position:static;max-height:none;border-right:0;border-bottom:1px solid var
     <div class="card">
       <div class="bar">
         <div class="seg" id="rng"><button data-r="-1" class="on">交易期間</button><button data-r="3">3月</button><button data-r="12">1年</button><button data-r="0">全部</button></div>
-        <div class="legend"><span><i class="b"></i>買進</span><span><i class="s"></i>賣出</span><span><i class="d"></i>買賣相抵</span><label style="cursor:pointer"><input type="checkbox" id="showOther"> <i class="o"></i>其他異動</label></div>
+        <div class="legend"><span><i class="b"></i>買進</span><span><i class="s"></i>賣出</span><span><i class="d"></i>買賣相抵</span><label style="cursor:pointer"><input type="checkbox" id="showOther"> <i class="o"></i>其他異動</label><label style="cursor:pointer"><input type="checkbox" id="adjOn"> 還原分割/減資</label></div>
       </div>
       <div id="chart"><div id="tip"></div><div class="msg" id="cMsg"><div><b>先匯入你的 e存摺</b>點右上「匯入 e存摺 PDF」，輸入 PDF 密碼（身分證字號）即可解析。</div></div></div>
     </div>
@@ -213,7 +214,8 @@ let rows = store.get('pb:rows', []);          // 存摺列（由新到舊）
 let meta = store.get('pb:meta', {});
 let edits = store.get('pb:edits', {});        // 手動成交價
 let cur = store.get('pb:cur', null);
-let range = -1, prices = [], pxMap = new Map();
+let range = -1, prices = [], pxMap = new Map(), events = [], adjMap = new Map();
+$('#adjOn').checked = store.get('pb:adj', true);
 const BUY = '買進', SELL = '賣出', DAY = '買賣相抵';
 const priceCode = c => c.replace(/O$/, '');   // 0050O(舊) → 0050
 const key = (r, i) => `${r.code}|${r.date}|${r.memo}|${r.wd}|${r.dp}|${i}`;
@@ -310,9 +312,9 @@ function makeChart() {
   chart.subscribeCrosshairMove(p => {
     if (!p.time || !p.point) { tip.style.display = 'none'; return }
     const d = typeof p.time === 'string' ? p.time : `${p.time.year}-${String(p.time.month).padStart(2, '0')}-${String(p.time.day).padStart(2, '0')}`;
-    const bar = pxMap.get(d), ev = curRows().filter(r => r.date === d);
+    const bar = adjMap.get(d), rawB = pxMap.get(d), ev = curRows().filter(r => r.date === d);
     if (!bar && !ev.length) { tip.style.display = 'none'; return }
-    tip.innerHTML = `<b>${d}</b>${bar ? `<br>開 ${fmt(bar.open)}　高 ${fmt(bar.high)}<br>低 ${fmt(bar.low)}　收 <b>${fmt(bar.close)}</b>` : ''}` +
+    tip.innerHTML = `<b>${d}</b>${bar ? `<br>開 ${fmt(bar.open)}　高 ${fmt(bar.high)}<br>低 ${fmt(bar.low)}　收 <b>${fmt(Math.round(bar.close * 100) / 100)}</b>${rawB && Math.abs(rawB.close - bar.close) > 1e-6 ? `<br><small>原始收盤 ${fmt(rawB.close)}</small>` : ''}` : ''}` +
       ev.map(r => `<br><span class="tag ${cls(r)}">${r.memo}</span> ${r.dp ? '+' + fmt(r.dp) : ''}${r.wd ? ' −' + fmt(r.wd) : ''} 股`).join('');
     tip.style.display = 'block';
     const x = p.point.x + 16 + tip.offsetWidth > chartEl.clientWidth ? p.point.x - tip.offsetWidth - 16 : p.point.x + 16;
@@ -335,36 +337,59 @@ async function loadPrices(code) {
   const start = new Date(evs.length ? evs[0] : Date.now() - 3 * 365 * 864e5);
   start.setMonth(start.getMonth() - 3);
   const startStr = start.toISOString().slice(0, 10);
-  if (cached && (cached.manual || (Date.now() - cached.t < 6 * 3600e3 && cached.start <= startStr))) return cached.data;
+  if (cached && (cached.manual || (cached.events && Date.now() - cached.t < 6 * 3600e3 && cached.start <= startStr))) return cached;
   const tok = store.get('pb:tok', '');
-  const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${encodeURIComponent(pc)}&start_date=${startStr}`;
-  const res = await fetch(url, tok ? { headers: { Authorization: 'Bearer ' + tok } } : {});
-  const j = await res.json();
-  if (j.status !== 200 && j.msg !== 'success') throw new Error(j.msg || 'FinMind 回傳錯誤');
-  const data = (j.data || []).filter(d => d.open > 0).map(d => ({ time: d.date, open: d.open, high: d.max, low: d.min, close: d.close, volume: d.Trading_Volume }));
+  const fm = async (ds, from) => {
+    const r = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=${ds}&data_id=${encodeURIComponent(pc)}&start_date=${from}`, tok ? { headers: { Authorization: 'Bearer ' + tok } } : {});
+    const j = await r.json();
+    if (j.status !== 200 && j.msg !== 'success') throw new Error(j.msg || 'FinMind 回傳錯誤');
+    return j.data || [];
+  };
+  const [raw, sp, cr] = await Promise.all([fm('TaiwanStockPrice', startStr),
+    fm('TaiwanStockSplitPrice', '2000-01-01').catch(() => []), fm('TaiwanStockCapitalReductionReferencePrice', '2000-01-01').catch(() => [])]);
+  const data = raw.filter(d => d.open > 0).map(d => ({ time: d.date, open: d.open, high: d.max, low: d.min, close: d.close, volume: d.Trading_Volume }));
   if (!data.length) throw new Error('查無股價（權證、已下市或代號錯誤）');
-  store.set(ck, { t: Date.now(), start: startStr, data });
-  return data;
+  // 分割／減資事件：f = 事件後參考價 ÷ 事件前收盤，事件日之前的價格乘上 f 即為還原價
+  const evts = [
+    ...sp.filter(e => e.before_price > 0 && e.after_price > 0).map(e => ({ date: e.date, f: e.after_price / e.before_price, label: e.type || '分割' })),
+    ...cr.filter(e => e.ClosingPriceonTheLastTradingDay > 0 && e.PostReductionReferencePrice > 0).map(e => ({ date: e.date, f: e.PostReductionReferencePrice / e.ClosingPriceonTheLastTradingDay, label: '減資' }))
+  ].filter(e => Math.abs(e.f - 1) > 0.01).sort((a, b) => a.date.localeCompare(b.date));
+  const out = { t: Date.now(), start: startStr, data, events: evts };
+  store.set(ck, out);
+  return out;
 }
+// 某日之後還有哪些事件：價格要乘的累積係數
+const factorAfter = d => events.filter(e => e.date > d).reduce((m, e) => m * e.f, 1);
+const ratioText = f => f < 1 ? `1 拆 ${fmt(Math.round(1 / f * 100) / 100)}` : `${fmt(Math.round(f * 100) / 100)} 合 1`;
 
 async function renderChart() {
   if (!chart) makeChart();
   if (!chart) { msg('圖表函式庫載入失敗', '請確認可以連線到 unpkg.com'); return }
   if (!cur) return;
   msg('載入股價中…');
-  try { prices = await loadPrices(cur) }
+  try { const px = await loadPrices(cur); prices = px.data; events = px.events || [] }
   catch (e) {
-    prices = []; pxMap = new Map(); candle.setData([]); vol.setData([]); candle.setMarkers([]);
+    prices = []; events = []; pxMap = new Map(); adjMap = new Map(); candle.setData([]); vol.setData([]); candle.setMarkers([]);
     msg('抓不到 ' + priceCode(cur) + ' 的股價', `${e.message === 'Failed to fetch' ? '網路被擋住或 FinMind 暫時無法連線' : e.message}<br>可改用「匯入股價 CSV」手動提供。`);
     renderTable(); renderStats(); return;
   }
   msg('');
   pxMap = new Map(prices.map(d => [d.time, d]));
-  candle.setData(prices);
-  vol.setData(prices.map(d => ({ time: d.time, value: d.volume, color: d.close >= d.open ? '#d23a2a40' : '#16935a40' })));
-  candle.setMarkers(markers());
+  drawSeries();
   applyRange(); renderTable(); renderStats();
 }
+function drawSeries() {
+  const on = $('#adjOn').checked;
+  const adj = prices.map(d => { const m = on ? factorAfter(d.time) : 1;
+    return m === 1 ? d : { time: d.time, open: d.open * m, high: d.high * m, low: d.low * m, close: d.close * m, volume: d.volume / m } });
+  adjMap = new Map(adj.map(d => [d.time, d]));
+  candle.setData(adj);
+  vol.setData(adj.map(d => ({ time: d.time, value: d.volume, color: d.close >= d.open ? '#d23a2a40' : '#16935a40' })));
+  candle.setMarkers(markers());
+  const n = events.length;
+  $('#src').textContent = 'FinMind 開放資料。' + (n ? `${priceCode(cur)} 有 ${n} 次股本異動（${events.map(e => `${e.date} ${e.label} ${ratioText(e.f)}`).join('、')}），${on ? '圖上已還原為現在的股數基準' : '目前顯示原始價格'}；明細與成本計算一律用原始價格，與存摺股數對應。` : '未還原權息。');
+}
+$('#adjOn').onchange = () => { store.set('pb:adj', $('#adjOn').checked); if (prices.length) drawSeries() };
 // 非交易日的異動（例如假日撥轉）對齊到下一個交易日
 function snap(d) { if (pxMap.has(d)) return d; const t = prices.find(p => p.time >= d); return t ? t.time : null }
 function markers() {
@@ -376,15 +401,16 @@ function markers() {
     const k = t + kind, a = agg.get(k) || { t, kind, q: 0, memo: r.memo };
     a.q += kind === 'S' ? r.wd : kind === 'B' ? r.dp : (r.dp || r.wd); agg.set(k, a);
   }
+  for (const e of events) { const t = snap(e.date); if (t) agg.set(t + 'E', { t, kind: 'E', q: 0, memo: `${e.label} ${ratioText(e.f)}` }) }
   const narrow = chartEl.clientWidth < 600;
   // 零股小額買賣只畫箭頭不寫字，避免定期定額把圖塞滿
-  const label = a => narrow || ((a.kind === 'B' || a.kind === 'S') && a.q < 1000) ? '' :
+  const label = a => a.kind === 'E' ? a.memo : narrow || ((a.kind === 'B' || a.kind === 'S') && a.q < 1000) ? '' :
     a.kind === 'B' ? `買 ${fmt(a.q)}` : a.kind === 'S' ? `賣 ${fmt(a.q)}` : a.kind === 'D' ? `沖 ${fmt(a.q)}` : a.memo;
   return [...agg.values()].sort((a, b) => a.t.localeCompare(b.t) || a.kind.localeCompare(b.kind)).map(a => ({
     size: (a.kind === 'B' || a.kind === 'S') && a.q < 1000 ? 0.6 : 1,
     time: a.t,
     position: a.kind === 'S' ? 'aboveBar' : a.kind === 'B' ? 'belowBar' : 'aboveBar',
-    color: a.kind === 'B' ? '#d23a2a' : a.kind === 'S' ? '#16935a' : a.kind === 'D' ? '#e1a400' : '#8a847b',
+    color: a.kind === 'E' ? '#5b6cff' : a.kind === 'B' ? '#d23a2a' : a.kind === 'S' ? '#16935a' : a.kind === 'D' ? '#e1a400' : '#8a847b',
     shape: a.kind === 'B' ? 'arrowUp' : a.kind === 'S' ? 'arrowDown' : 'circle',
     text: label(a)
   }));
@@ -446,9 +472,12 @@ function renderStats() {
     else if (r.memo === SELL) { sq += r.wd; nS++; if (sh > 0) { const avg = cost / sh, q = Math.min(r.wd, sh); if (p) real += (p - avg) * q; cost -= avg * q; sh -= q } }
     else if (r.memo !== DAY && r.bal != null && sh > 0 && r.dp + r.wd > 0) { /* 撥轉、分割等：以餘額重設股數、成本不變 */ sh = r.bal; if (!sh) cost = 0 }
   });
-  const bal = s ? s.bal : 0, avg = sh > 0 ? cost / sh : null, un = last && avg && bal ? (last.close - avg) * bal : null;
-  const cells = [['期末餘額', bal ? fmt(bal) + ' 股' : '0'], ['買進', `${nB} 次・${fmt(bq)} 股`], ['賣出', `${nS} 次・${fmt(sq)} 股`],
-    ['估算均價', avg ? fmt(Math.round(avg * 100) / 100) : '—'], ['估算未實現', un == null ? '—' : `<span class="${un >= 0 ? 'up' : 'down'}">${un >= 0 ? '+' : ''}${fmt(Math.round(un))}</span>`],
+  // 存摺最後一筆之後若又分割／減資，換算成現在的股數與每股成本再算未實現
+  const lastRow = list[0], fa = lastRow ? factorAfter(lastRow.date) : 1;
+  const bal = s ? s.bal : 0, avg = sh > 0 ? cost / sh : null, un = last && avg && bal ? (last.close - avg * fa) * bal / fa : null;
+  const sub = t => `<small class="sub">${t}</small>`, r2 = n => Math.round(n * 100) / 100;
+  const cells = [['期末餘額', bal ? fmt(bal) + ' 股' + (fa !== 1 ? sub(`分割/減資後 ≈ ${fmt(Math.round(bal / fa))} 股`) : '') : '0'], ['買進', `${nB} 次・${fmt(bq)} 股`], ['賣出', `${nS} 次・${fmt(sq)} 股`],
+    ['估算均價', avg ? (fa !== 1 && bal ? fmt(r2(avg * fa)) + sub(`換算後；原始 ${fmt(r2(avg))}`) : fmt(r2(avg))) : '—'], ['估算未實現', un == null ? '—' : `<span class="${un >= 0 ? 'up' : 'down'}">${un >= 0 ? '+' : ''}${fmt(Math.round(un))}</span>`],
     ['估算已實現', nS ? `<span class="${real >= 0 ? 'up' : 'down'}">${real >= 0 ? '+' : ''}${fmt(Math.round(real))}</span>` : '—']];
   $('#stats').innerHTML = cells.map(([a, b]) => `<div><dt>${a}</dt><dd>${b}</dd></div>`).join('');
 }
