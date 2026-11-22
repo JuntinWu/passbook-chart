@@ -70,6 +70,8 @@ section.view{padding:18px max(2.5vw,14px) 40px;display:flex;flex-direction:colum
 .selgrid dt{font-size:13px;color:var(--mute)}.selgrid dd{margin:2px 0 0;font-weight:700;font-size:17px;font-variant-numeric:tabular-nums}
 .selgrid small{display:block;font-weight:500;font-size:13px;color:var(--mute)}
 .verdict{font-size:14px;margin:0}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:50;background:var(--ink);color:var(--panel);padding:10px 16px;border-radius:10px;font-size:14px;box-shadow:0 8px 24px #0003;max-width:90vw}
+#toast[hidden]{display:none}
 .msg{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;color:var(--mute);z-index:4;background:var(--panel)}
 .msg[hidden]{display:none}.msg b{display:block;color:var(--ink);font-size:18px;margin-bottom:6px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
@@ -107,6 +109,7 @@ aside{position:static;max-height:none;border-right:0;border-bottom:1px solid var
   <div class="tools">
     <button class="btn pri" id="bImport">匯入 e存摺 PDF</button>
     <button class="btn" id="bPx">匯入股價 CSV</button>
+    <button class="btn" id="bJson">匯出 JSON</button>
     <button class="btn" id="bSet">設定</button>
   </div>
 </header>
@@ -135,6 +138,7 @@ aside{position:static;max-height:none;border-right:0;border-bottom:1px solid var
   </section>
 </main>
 
+<div id="toast" role="status" hidden></div>
 <dialog id="dImport"><form class="dlg" method="dialog" id="fImport">
   <h3>匯入 e存摺 PDF</h3>
   <label class="drop" id="drop"><input type="file" id="file" accept=".pdf,.json" hidden><span id="fName">拖曳檔案到這裡，或點一下選擇<br><small>集保 e手掌握 → 匯出「交易明細」PDF；也可匯入本站匯出的 JSON</small></span></label>
@@ -252,6 +256,8 @@ $('#bParse').onclick = async () => {
     let got, m = {};
     if (/\.json$/i.test(pickedFile.name)) {
       const j = JSON.parse(await pickedFile.text()); got = j.rows || j; m = j.meta || {};
+      if (!Array.isArray(got) || got.some(r => !r || !r.date || !r.code)) throw new Error('JSON 格式不符，請匯入本站匯出的檔案');
+      if (j.edits && typeof j.edits === 'object') { edits = { ...edits, ...j.edits }; store.set('pb:edits', edits) }
     } else {
       if (!window.pdfjsLib) throw new Error('PDF 函式庫載入失敗，請確認網路連線');
       $('#bParse').textContent = '解析中…';
@@ -629,7 +635,17 @@ $('#bPxOk').onclick = () => {
 };
 $('#bSet').onclick = () => { $('#tok').value = store.get('pb:tok', ''); $('#setMsg').textContent = ''; $('#dSet').showModal() };
 $('#bSaveSet').onclick = () => store.set('pb:tok', $('#tok').value.trim());
-$('#bExport').onclick = async () => { try { await navigator.clipboard.writeText(JSON.stringify({ meta, rows })); $('#setMsg').textContent = `已複製 ${rows.length} 筆，可存成 .json 之後匯入` } catch { $('#setMsg').textContent = '瀏覽器不允許寫入剪貼簿' } };
+// 匯出：交易紀錄＋手動成交價，可再從「匯入」讀回
+const exportData = () => ({ app: 'passbook-chart', version: 1, exportedAt: new Date().toISOString(), meta, edits, rows });
+$('#bJson').onclick = () => {
+  if (!rows.length) { alertMsg('還沒有交易紀錄可以匯出'); return }
+  const blob = new Blob([JSON.stringify(exportData(), null, 2)], { type: 'application/json' });
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `passbook-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.json` });
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  alertMsg(`已匯出 ${rows.length} 筆異動、${Object.keys(edits).length} 筆手動成交價`);
+};
+function alertMsg(t) { const el = $('#toast'); el.textContent = t; el.hidden = false; clearTimeout(alertMsg.t); alertMsg.t = setTimeout(() => el.hidden = true, 3000) }
+$('#bExport').onclick = async () => { try { await navigator.clipboard.writeText(JSON.stringify(exportData())); $('#setMsg').textContent = `已複製 ${rows.length} 筆，可存成 .json 之後匯入` } catch { $('#setMsg').textContent = '瀏覽器不允許寫入剪貼簿' } };
 $('#bClearPx').onclick = () => { Object.keys(localStorage).filter(k => k.startsWith('px:')).forEach(k => store.del(k)); $('#setMsg').textContent = '已清除股價快取' };
 $('#bClearAll').onclick = () => { ['pb:rows', 'pb:meta', 'pb:edits', 'pb:cur'].forEach(store.del); rows = []; meta = {}; edits = {}; cur = null; $('#setMsg').textContent = '已清除'; renderAll() };
 
