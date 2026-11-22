@@ -56,6 +56,20 @@ section.view{padding:18px max(2.5vw,14px) 40px;display:flex;flex-direction:colum
 .legend .o{width:9px;height:9px;border:0;border-radius:50%;background:#8a847b}.legend .d{width:9px;height:9px;border:0;border-radius:50%;background:#e1a400}
 #chart{position:relative;height:min(62vh,560px);min-height:340px}
 #tip{position:absolute;z-index:5;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;box-shadow:0 6px 20px #0002;display:none;max-width:240px}
+#selLayer{position:absolute;inset:0;z-index:3;pointer-events:none;touch-action:none}
+#selLayer.on{pointer-events:auto;cursor:crosshair}
+#band{position:absolute;top:0;bottom:0;display:none;pointer-events:none;background:color-mix(in srgb,var(--acc) 11%,transparent);border-inline:2px solid var(--acc)}
+#band.pend{background:none;border-right:0;border-left:2px dashed var(--acc);width:0!important}
+.btn.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.selcard{border-bottom:1px solid var(--line);padding:12px 14px;display:flex;flex-direction:column;gap:10px;background:var(--soft)}
+.selcard[hidden]{display:none}
+.selhead{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;justify-content:space-between}
+.selhead b{font-size:16px;font-variant-numeric:tabular-nums}.selhead span{color:var(--mute);font-size:13px}
+.selgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}
+.selgrid div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.selgrid dt{font-size:13px;color:var(--mute)}.selgrid dd{margin:2px 0 0;font-weight:700;font-size:17px;font-variant-numeric:tabular-nums}
+.selgrid small{display:block;font-weight:500;font-size:13px;color:var(--mute)}
+.verdict{font-size:14px;margin:0}
 .msg{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;color:var(--mute);z-index:4;background:var(--panel)}
 .msg[hidden]{display:none}.msg b{display:block;color:var(--ink);font-size:18px;margin-bottom:6px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
@@ -107,13 +121,14 @@ aside{position:static;max-height:none;border-right:0;border-bottom:1px solid var
     <dl class="stats" id="stats"></dl>
     <div class="card">
       <div class="bar">
-        <div class="seg" id="rng"><button data-r="-1" class="on">交易期間</button><button data-r="3">3月</button><button data-r="12">1年</button><button data-r="0">全部</button></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap"><div class="seg" id="rng"><button data-r="-1" class="on">交易期間</button><button data-r="3">3月</button><button data-r="12">1年</button><button data-r="0">全部</button></div><button class="btn" id="bSel" aria-pressed="false">框選區間</button></div>
         <div class="legend"><span><i class="b"></i>買進</span><span><i class="s"></i>賣出</span><span><i class="d"></i>買賣相抵</span><label style="cursor:pointer"><input type="checkbox" id="showOther"> <i class="o"></i>其他異動</label><label style="cursor:pointer"><input type="checkbox" id="adjOn"> 還原分割/減資</label></div>
       </div>
-      <div id="chart"><div id="tip"></div><div class="msg" id="cMsg"><div><b>先匯入你的 e存摺</b>點右上「匯入 e存摺 PDF」，輸入 PDF 密碼（身分證字號）即可解析。</div></div></div>
+      <div class="selcard" id="selCard" hidden></div>
+      <div id="chart"><div id="selLayer"><div id="band"></div></div><div id="tip"></div><div class="msg" id="cMsg"><div><b>先匯入你的 e存摺</b>點右上「匯入 e存摺 PDF」，輸入 PDF 密碼（身分證字號）即可解析。</div></div></div>
     </div>
     <div class="card">
-      <div class="bar"><strong>交易明細</strong><p class="note">價格欄預設為當日收盤價（存摺不含成交價），點一下即可改成實際成交價</p></div>
+      <div class="bar"><strong>交易明細 <span class="note" id="tbCount" style="display:inline"></span></strong><p class="note">價格欄預設為當日收盤價（存摺不含成交價），點一下即可改成實際成交價</p></div>
       <div class="scroll"><table><thead><tr><th>日期</th><th>摘要</th><th>提出</th><th>存入</th><th>餘額</th><th>價格</th><th>金額</th></tr></thead><tbody id="tb"></tbody></table></div>
     </div>
     <p class="note" id="src">股價來源：FinMind 開放資料（未還原權息）。</p>
@@ -289,7 +304,7 @@ $('#onlyHold').onchange = renderList;
 $('#q').oninput = renderList;
 $('#fGo').onsubmit = e => { e.preventDefault(); const v = $('#q').value.trim().toUpperCase(); if (!v) return;
   const hit = stocks().find(s => s.code === v || (s.name || '').includes($('#q').value.trim())); select(hit ? hit.code : v) };
-function select(c) { cur = c; store.set('pb:cur', c); renderAll() }
+function select(c) { cur = c; store.set('pb:cur', c); sel = null; pend = null; dense = null; renderAll() }
 
 /* ---------- 圖表 ---------- */
 const chartEl = $('#chart'), tip = $('#tip');
@@ -320,6 +335,7 @@ function makeChart() {
     const x = p.point.x + 16 + tip.offsetWidth > chartEl.clientWidth ? p.point.x - tip.offsetWidth - 16 : p.point.x + 16;
     tip.style.left = Math.max(4, x) + 'px'; tip.style.top = '10px';
   });
+  chart.timeScale().subscribeVisibleLogicalRangeChange(onView);
   chart.subscribeClick(p => {
     if (!p.time) return;
     const tr = document.querySelector(`#tb tr[data-d="${p.time}"]`);
@@ -376,7 +392,7 @@ async function renderChart() {
   msg('');
   pxMap = new Map(prices.map(d => [d.time, d]));
   drawSeries();
-  applyRange(); renderTable(); renderStats();
+  applyRange(); renderTable(); renderStats(); renderSel(); onView();
 }
 function drawSeries() {
   const on = $('#adjOn').checked;
@@ -404,8 +420,9 @@ function markers() {
   for (const e of events) { const t = snap(e.date); if (t) agg.set(t + 'E', { t, kind: 'E', q: 0, memo: `${e.label} ${ratioText(e.f)}` }) }
   const narrow = chartEl.clientWidth < 600;
   // 零股小額買賣只畫箭頭不寫字，避免定期定額把圖塞滿
-  const label = a => a.kind === 'E' ? a.memo : narrow || ((a.kind === 'B' || a.kind === 'S') && a.q < 1000) ? '' :
+  const label = a => a.kind === 'E' ? a.memo : narrow || dense || ((a.kind === 'B' || a.kind === 'S') && a.q < 1000) ? '' :
     a.kind === 'B' ? `買 ${fmt(a.q)}` : a.kind === 'S' ? `賣 ${fmt(a.q)}` : a.kind === 'D' ? `沖 ${fmt(a.q)}` : a.memo;
+  mkTimes = [...agg.values()].filter(a => 'BSD'.includes(a.kind)).map(a => a.t);
   return [...agg.values()].sort((a, b) => a.t.localeCompare(b.t) || a.kind.localeCompare(b.kind)).map(a => ({
     size: (a.kind === 'B' || a.kind === 'S') && a.q < 1000 ? 0.6 : 1,
     time: a.t,
@@ -435,12 +452,129 @@ $('#rng').onclick = e => { const b = e.target.closest('button'); if (!b) return;
   range = +b.dataset.r; document.querySelectorAll('#rng button').forEach(x => x.classList.toggle('on', x === b)); applyRange() };
 $('#showOther').onchange = () => candle && candle.setMarkers(markers());
 
+/* ---------- 框選區間 ---------- */
+let sel = null, selMode = false, drag = null, pend = null, dense = null, mkTimes = [];
+const layer = $('#selLayer'), band = $('#band');
+const tstr = t => t == null ? null : typeof t === 'string' ? t : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`;
+const inSel = r => { const t = snap(r.date) || r.date; return t >= sel.from && t <= sel.to };
+const lx = e => e.clientX - layer.getBoundingClientRect().left;
+function xToTime(x) {
+  if (!prices.length) return null;
+  const t = tstr(chart.timeScale().coordinateToTime(x));
+  if (t) return t;
+  const l = chart.timeScale().coordinateToLogical(x);   // 拖到資料範圍外：取第一根或最後一根
+  return l == null ? null : l < 0 ? prices[0].time : prices[prices.length - 1].time;
+}
+const xOf = t => chart.timeScale().timeToCoordinate(t);
+function drawBand() {
+  if (!chart || (!sel && !pend)) { band.style.display = 'none'; return }
+  const hs = chart.timeScale().options().barSpacing / 2;
+  if (pend && !sel) { const x = xOf(pend); if (x == null) return; band.className = 'pend'; Object.assign(band.style, { display: 'block', left: x + 'px' }); return }
+  const a = xOf(sel.from), b = xOf(sel.to); if (a == null || b == null) { band.style.display = 'none'; return }
+  band.className = '';
+  Object.assign(band.style, { display: 'block', left: (a - hs) + 'px', width: Math.max(2, b - a + 2 * hs) + 'px' });
+}
+function setSel(a, b) { if (!a || !b) return; sel = a <= b ? { from: a, to: b } : { from: b, to: a }; drawBand(); renderSel() }
+function clearSel() { sel = null; pend = null; drawBand(); renderSel(); renderTable() }
+function setMode(on) {
+  selMode = on; layer.classList.toggle('on', on);
+  $('#bSel').classList.toggle('on', on); $('#bSel').setAttribute('aria-pressed', on);
+  $('#bSel').textContent = on ? '完成框選' : '框選區間';
+  if (!on) pend = null;
+  drawBand(); renderSel();
+}
+$('#bSel').onclick = () => setMode(!selMode);
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && (sel || selMode)) { clearSel(); setMode(false) } });
+layer.addEventListener('pointerdown', e => {
+  if (!selMode || !prices.length) return;
+  e.preventDefault(); layer.setPointerCapture(e.pointerId);
+  const x = lx(e);
+  if (sel) {   // 抓住兩側邊緣可以調整
+    if (Math.abs(x - xOf(sel.from)) < 12) { drag = { edge: 'to', fix: sel.to }; return }
+    if (Math.abs(x - xOf(sel.to)) < 12) { drag = { edge: 'from', fix: sel.from }; return }
+  }
+  drag = { x0: x, moved: false };
+});
+layer.addEventListener('pointermove', e => {
+  const x = lx(e);
+  if (!drag) {
+    layer.style.cursor = sel && (Math.abs(x - xOf(sel.from)) < 12 || Math.abs(x - xOf(sel.to)) < 12) ? 'col-resize' : 'crosshair';
+    return;
+  }
+  if (drag.fix) { setSel(drag.fix, xToTime(x)); renderTable(); return }
+  if (!drag.moved && Math.abs(x - drag.x0) < 6) return;
+  drag.moved = true; pend = null; setSel(xToTime(drag.x0), xToTime(x));
+});
+const endDrag = e => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (d.fix || d.moved) { renderTable(); return }
+  // 點一下：第一下是起點，第二下是終點（手機用）
+  const t = xToTime(lx(e));
+  if (!pend) { pend = t; sel = null; drawBand(); renderSel(); renderTable() }
+  else { const a = pend; pend = null; setSel(a, t); renderTable() }
+};
+layer.addEventListener('pointerup', endDrag);
+layer.addEventListener('pointercancel', () => { drag = null });
+
+// 可見範圍內買賣標記太多時，只畫箭頭不寫數字
+function checkDense() {
+  if (!chart || !prices.length) return;
+  const vr = chart.timeScale().getVisibleRange(); if (!vr) return;
+  const f = tstr(vr.from), t = tstr(vr.to);
+  const d = mkTimes.filter(x => x >= f && x <= t).length > 15;
+  if (d !== dense) { dense = d; candle.setMarkers(markers()) }
+}
+let rafId = 0;
+function onView() { cancelAnimationFrame(rafId); rafId = requestAnimationFrame(() => { drawBand(); checkDense() }) }
+new ResizeObserver(onView).observe(chartEl);
+
+const money = n => (n < 0 ? '−' : '') + '$' + fmt(Math.round(Math.abs(n)));
+function renderSel() {
+  const card = $('#selCard');
+  if (!sel) {
+    card.hidden = !selMode;
+    card.innerHTML = `<p class="verdict">${pend ? `起點 <b>${pend}</b>，再點一下終點` : '<b>框選模式</b>：在圖上左右拖曳選出一段時間（手機：點起點，再點終點）。拖兩側邊緣可調整，Esc 取消。'}</p>`;
+    return;
+  }
+  const all = curRows(), bars = prices.filter(p => p.time >= sel.from && p.time <= sel.to);
+  const agg = () => ({ n: 0, q: 0, amt: 0, pq: 0, adj: 0 });
+  const B = agg(), S = agg(); let nD = 0;
+  all.forEach((r, i) => {
+    if (!inSel(r)) return;
+    if (r.memo === DAY) { nD++; return }
+    const o = r.memo === BUY ? B : r.memo === SELL ? S : null; if (!o) return;
+    const q = r.memo === BUY ? r.dp : r.wd, { p } = priceOf(r, i);
+    o.n++; o.q += q;
+    if (p) { o.amt += p * q; o.pq += q; o.adj += p * factorAfter(r.date) * q }
+  });
+  // 區間成交量加權均價（還原分割後）與漲跌幅
+  let pv = 0, vv = 0;
+  for (const b of bars) { const m = factorAfter(b.time), v = b.volume / m; pv += (b.high + b.low + b.close) / 3 * m * v; vv += v }
+  const vwap = vv ? pv / vv : null;
+  const chg = bars.length ? bars[bars.length - 1].close * factorAfter(bars[bars.length - 1].time) / (bars[0].open * factorAfter(bars[0].time)) - 1 : null;
+  const pct = x => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`;
+  const blk = (t, o) => `<div><dt>${t}</dt><dd>${o.n ? `${fmt(o.q)} 股` : '—'}${o.n ? `<small>${o.n} 次・${o.pq ? money(o.amt) + '・均價 ' + fmt(Math.round(o.amt / o.pq * 100) / 100) : '無價格'}</small>` : '<small>沒有紀錄</small>'}</dd></div>`;
+  const net = B.q - S.q, cash = B.amt - S.amt;
+  const vd = [];
+  if (vwap && B.pq) { const d = B.adj / B.pq / vwap - 1; vd.push(`買價比區間成交均價${d <= 0 ? '低' : '高'} <b>${Math.abs(d * 100).toFixed(1)}%</b>，${d <= 0 ? '買得比市場平均便宜' : '買得比市場平均貴'}`) }
+  if (vwap && S.pq) { const d = S.adj / S.pq / vwap - 1; vd.push(`賣價比區間成交均價${d >= 0 ? '高' : '低'} <b>${Math.abs(d * 100).toFixed(1)}%</b>，${d >= 0 ? '賣得比市場平均好' : '賣得比市場平均差'}`) }
+  card.hidden = false;
+  card.innerHTML = `<div class="selhead"><div><b>${sel.from} → ${sel.to}</b> <span>${bars.length} 個交易日${chg != null ? `・股價 <span class="${chg >= 0 ? 'up' : 'down'}">${pct(chg)}</span>` : ''}${vwap ? `・成交均價 ${fmt(Math.round(vwap * 100) / 100)}` : ''}</span></div><button class="btn" type="button" id="bClr">清除</button></div>
+  <dl class="selgrid">${blk('買進', B)}${blk('賣出', S)}
+  <div><dt>淨買入</dt><dd class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : net < 0 ? '−' : ''}${fmt(Math.abs(net))} 股<small>淨投入 ${money(cash)}${nD ? `・當沖 ${nD} 次未計` : ''}</small></dd></div></dl>
+  ${vd.length ? `<p class="verdict">${vd.join('；')}。<span class="note" style="display:inline">價格為收盤價或你填的成交價，均價已還原分割。</span></p>` : ''}`;
+  $('#bClr').onclick = clearSel;
+}
+
+
 /* ---------- 明細與統計 ---------- */
 function priceOf(r, i) { const k = key(r, i); if (edits[k] != null) return { p: edits[k], ed: true };
   const t = snap(r.date), b = t && pxMap.get(t); return { p: b ? b.close : null, ed: false } }
 function renderTable() {
-  const list = curRows();
-  $('#tb').innerHTML = list.length ? list.map((r, i) => {
+  const all = curRows(), list = all.map((r, i) => [r, i]).filter(([r]) => !sel || inSel(r));
+  $('#tbCount').textContent = sel ? `區間 ${list.length} 筆／全部 ${all.length} 筆` : '';
+  $('#tb').innerHTML = list.length ? list.map(([r, i]) => {
     const trade = r.memo === BUY || r.memo === SELL || r.memo === DAY;
     const { p, ed } = trade ? priceOf(r, i) : { p: null };
     const q = r.memo === SELL ? r.wd : r.dp;
@@ -448,13 +582,13 @@ function renderTable() {
     <td>${r.wd ? fmt(r.wd) : ''}</td><td>${r.dp ? fmt(r.dp) : ''}</td><td>${r.bal == null ? '' : fmt(r.bal)}</td>
     <td>${trade ? `<input inputmode="decimal" data-k="${key(r, i)}" value="${p ?? ''}" class="${ed ? 'edited' : ''}" aria-label="成交價">` : ''}</td>
     <td>${trade && p && r.memo !== DAY ? fmt(Math.round(p * q)) : ''}</td></tr>`
-  }).join('') : '<tr><td colspan="7" class="empty">這個代號沒有存摺異動紀錄，只顯示走勢</td></tr>';
+  }).join('') : `<tr><td colspan="7" class="empty">${sel ? '這段區間沒有存摺異動' : '這個代號沒有存摺異動紀錄，只顯示走勢'}</td></tr>`;
 }
 $('#tb').addEventListener('change', e => {
   const inp = e.target.closest('input[data-k]'); if (!inp) return;
   const v = parseFloat(inp.value);
   if (isNaN(v) || v <= 0) delete edits[inp.dataset.k]; else edits[inp.dataset.k] = v;
-  store.set('pb:edits', edits); renderTable(); renderStats();
+  store.set('pb:edits', edits); renderTable(); renderStats(); renderSel();
 });
 function renderStats() {
   const s = stocks().find(x => x.code === cur);
