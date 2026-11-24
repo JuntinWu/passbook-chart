@@ -7,5 +7,6 @@
 - 存摺不含成交價，價格預設為當日收盤價，可在明細表手動改成實際成交價
 - 「匯出 JSON」可下載交易紀錄與手動成交價，換裝置時用「匯入」讀回
 - 收盤後自動更新：每次開啟、切回分頁、或頁面開著每 10 分鐘，若有新的收盤價（台北 14:30 後）就只補抓新的那幾天
+- 「分價買賣」：在 K 線右側以同一價格軸畫出各價位買進（紅）與賣出（綠）張數，並標出均價線；可配合框選區間
 
 單一 `index.html`，不需建置。使用 [pdf.js](https://mozilla.github.io/pdf.js/) 與 [Lightweight Charts](https://www.tradingview.com/lightweight-charts/)。

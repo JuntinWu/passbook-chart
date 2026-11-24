@@ -59,6 +59,10 @@ section.view{padding:18px max(2.5vw,14px) 40px;display:flex;flex-direction:colum
 .legend .o{width:9px;height:9px;border:0;border-radius:50%;background:#8a847b}.legend .d{width:9px;height:9px;border:0;border-radius:50%;background:#e1a400}
 #chart{position:relative;height:min(62vh,560px);min-height:340px}
 #tip{position:absolute;z-index:5;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;box-shadow:0 6px 20px #0002;display:none;max-width:240px}
+#prof{position:absolute;inset:0;width:100%;height:100%;z-index:2;pointer-events:none;overflow:visible}
+#prof rect.hit{pointer-events:auto;cursor:help}
+#prof text{font:500 11px "Schibsted Grotesk","Noto Sans TC",sans-serif;fill:var(--ink);paint-order:stroke;stroke:var(--panel);stroke-width:3px;stroke-linejoin:round}
+#prof .ax{stroke:var(--line);stroke-width:1}
 #selLayer{position:absolute;inset:0;z-index:3;pointer-events:none;touch-action:none}
 #selLayer.on{pointer-events:auto;cursor:crosshair}
 #band{position:absolute;top:0;bottom:0;display:none;pointer-events:none;background:color-mix(in srgb,var(--acc) 11%,transparent);border-inline:2px solid var(--acc)}
@@ -127,11 +131,11 @@ aside{position:static;max-height:none;border-right:0;border-bottom:1px solid var
     <dl class="stats" id="stats"></dl>
     <div class="card">
       <div class="bar">
-        <div style="display:flex;gap:6px;flex-wrap:wrap"><div class="seg" id="rng"><button data-r="-1" class="on">交易期間</button><button data-r="3">3月</button><button data-r="12">1年</button><button data-r="0">全部</button></div><button class="btn" id="bSel" aria-pressed="false">框選區間</button></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap"><div class="seg" id="rng"><button data-r="-1" class="on">交易期間</button><button data-r="3">3月</button><button data-r="12">1年</button><button data-r="0">全部</button></div><button class="btn" id="bSel" aria-pressed="false">框選區間</button><button class="btn" id="bProf" aria-pressed="true">分價買賣</button></div>
         <div class="legend"><span><i class="b"></i>買進</span><span><i class="s"></i>賣出</span><span><i class="d"></i>買賣相抵</span><label style="cursor:pointer"><input type="checkbox" id="showOther"> <i class="o"></i>其他異動</label><label style="cursor:pointer"><input type="checkbox" id="adjOn"> 還原分割/減資</label></div>
       </div>
       <div class="selcard" id="selCard" hidden></div>
-      <div id="chart"><div id="selLayer"><div id="band"></div></div><div id="tip"></div><div class="msg" id="cMsg"><div><b>先匯入你的 e存摺</b>點右上「匯入 e存摺 PDF」，輸入 PDF 密碼（身分證字號）即可解析。</div></div></div>
+      <div id="chart"><svg id="prof" aria-hidden="true"></svg><div id="selLayer"><div id="band"></div></div><div id="tip"></div><div class="msg" id="cMsg"><div><b>先匯入你的 e存摺</b>點右上「匯入 e存摺 PDF」，輸入 PDF 密碼（身分證字號）即可解析。</div></div></div>
     </div>
     <div class="card">
       <div class="bar"><strong>交易明細 <span class="note" id="tbCount" style="display:inline"></span></strong><p class="note">價格欄預設為當日收盤價（存摺不含成交價），點一下即可改成實際成交價</p></div>
@@ -458,7 +462,7 @@ function drawSeries() {
   $('#src').textContent = 'FinMind 開放資料。' + (n ? `${priceCode(cur)} 有 ${n} 次股本異動（${events.map(e => `${e.date} ${e.label} ${ratioText(e.f)}`).join('、')}），${on ? '圖上已還原為現在的股數基準' : '目前顯示原始價格'}；明細與成本計算一律用原始價格，與存摺股數對應。` : '未還原權息。');
 }
 $('#bRef').onclick = () => refreshPrices(true);
-$('#adjOn').onchange = () => { store.set('pb:adj', $('#adjOn').checked); if (prices.length) drawSeries() };
+$('#adjOn').onchange = () => { store.set('pb:adj', $('#adjOn').checked); if (prices.length) { drawSeries(); onView() } };
 // 非交易日的異動（例如假日撥轉）對齊到下一個交易日
 function snap(d) { if (pxMap.has(d)) return d; const t = prices.find(p => p.time >= d); return t ? t.time : null }
 function markers() {
@@ -504,6 +508,80 @@ function applyRange() {
 $('#rng').onclick = e => { const b = e.target.closest('button'); if (!b) return;
   range = +b.dataset.r; document.querySelectorAll('#rng button').forEach(x => x.classList.toggle('on', x === b)); applyRange() };
 $('#showOther').onchange = () => candle && candle.setMarkers(markers());
+
+
+/* ---------- 分價買賣（價格分布） ---------- */
+let posAvg = null, avgLine = null, profOn = store.get('pb:prof', true);
+const prof = $('#prof'), SVGNS = 'http://www.w3.org/2000/svg';
+function setProf(on) { profOn = on; store.set('pb:prof', on); $('#bProf').classList.toggle('on', on); $('#bProf').setAttribute('aria-pressed', on); onView() }
+$('#bProf').onclick = () => setProf(!profOn);
+$('#bProf').classList.toggle('on', profOn);
+function niceStep(raw) {
+  const p = 10 ** Math.floor(Math.log10(raw)), n = raw / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+const lots = q => { const v = q / 1000; return v >= 10 ? fmt(Math.round(v)) : fmt(Math.round(v * 100) / 100) };
+function drawProfile() {
+  prof.innerHTML = '';
+  if (avgLine && candle) { candle.removePriceLine(avgLine); avgLine = null }
+  if (!profOn || !chart || !prices.length) return;
+  const adjOn = $('#adjOn').checked;
+  // 交易換算到圖上的價格基準：還原時價格 × f、股數 ÷ f
+  const pts = [];
+  curRows().forEach((r, i) => {
+    if (r.memo !== BUY && r.memo !== SELL) return;
+    if (sel && !inSel(r)) return;
+    const { p } = priceOf(r, i); if (!p) return;
+    const f = adjOn ? factorAfter(r.date) : 1;
+    pts.push({ buy: r.memo === BUY, p: p * f, q: (r.memo === BUY ? r.dp : r.wd) / f, raw: p });
+  });
+  // 平均成本線：有框選時用區間買進均價，否則用目前持股均價
+  let avg = null, avgTitle = '';
+  if (sel) { const b = pts.filter(x => x.buy), q = b.reduce((a, x) => a + x.q, 0); if (q) { avg = b.reduce((a, x) => a + x.p * x.q, 0) / q; avgTitle = '買均' } }
+  else if (posAvg) { avg = adjOn ? posAvg.adj : posAvg.raw; avgTitle = '均價' }
+  if (avg) avgLine = candle.createPriceLine({ price: avg, color: '#c8371e', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: avgTitle });
+  if (!pts.length) return;
+  const W = chartEl.clientWidth, H = chartEl.clientHeight - chart.timeScale().height();
+  const plotW = W - chart.priceScale('right').width();
+  const top = candle.coordinateToPrice(0), bot = candle.coordinateToPrice(H);
+  if (top == null || bot == null || top <= bot) return;
+  const step = niceStep((top - bot) / (H < 300 ? 12 : 20));
+  const bk = new Map();
+  for (const x of pts) {
+    const k = Math.floor(x.p / step), b = bk.get(k) || { k, bq: 0, sq: 0, bn: 0, sn: 0 };
+    if (x.buy) { b.bq += x.q; b.bn++ } else { b.sq += x.q; b.sn++ }
+    bk.set(k, b);
+  }
+  const totB = pts.filter(x => x.buy).reduce((a, x) => a + x.q, 0) || 1;
+  const maxQ = Math.max(...[...bk.values()].map(b => Math.max(b.bq, b.sq)));
+  const half = Math.min(110, plotW * 0.16), base = plotW - half - 6;
+  const el = (tag, at, txt) => { const n = document.createElementNS(SVGNS, tag); for (const k in at) n.setAttribute(k, at[k]); if (txt != null) n.textContent = txt; prof.appendChild(n); return n };
+  el('line', { class: 'ax', x1: base, x2: base, y1: 0, y2: H });
+  const hidden = [];
+  for (const b of [...bk.values()].sort((a, c) => a.k - c.k)) {
+    const lo = b.k * step, hi = lo + step;
+    const y1 = candle.priceToCoordinate(hi), y2 = candle.priceToCoordinate(lo);
+    if (y1 == null || y2 == null) continue;
+    if (y2 < 0 || y1 > H) { hidden.push(b); continue }
+    const y = Math.max(0, y1) + 1, h = Math.max(3, Math.min(H, y2) - Math.max(0, y1) - 2);
+    const tip = `${fmt(Math.round(lo * 100) / 100)}–${fmt(Math.round(hi * 100) / 100)}\n買進 ${lots(b.bq)} 張（${b.bn} 次，佔 ${Math.round(b.bq / totB * 100)}%）` + (b.sq ? `\n賣出 ${lots(b.sq)} 張（${b.sn} 次）` : '');
+    if (b.bq) {
+      const w = Math.max(2, b.bq / maxQ * half);
+      el('rect', { x: base, y, width: w, height: h, rx: 2, fill: '#d23a2a', 'fill-opacity': .62 });
+      const pct = b.bq / totB;
+      if (h >= 10 && !b.sq && (pct >= 0.08 || w > half * 0.6)) el('text', { x: base - 4, y: y + h / 2 + 4, 'text-anchor': 'end' }, `${lots(b.bq)}張 ${Math.round(pct * 100)}%`);
+    }
+    if (b.sq) { const w = Math.max(2, b.sq / maxQ * half); el('rect', { x: base - w, y, width: w, height: h, rx: 2, fill: '#16935a', 'fill-opacity': .62 }) }
+    const hit = el('rect', { class: 'hit', x: base - half, y, width: half * 2, height: h, fill: 'transparent' });
+    el('title', {}, tip); hit.appendChild(prof.lastChild);
+  }
+  // 交易價位在目前畫面外時提示
+  if (hidden.length) {
+    const up = hidden.filter(b => b.k * step >= top).reduce((a, b) => a + b.bq + b.sq, 0), dn = hidden.filter(b => b.k * step < top).reduce((a, b) => a + b.bq + b.sq, 0);
+    if (up) el('text', { x: base + 4, y: 14 }, `↑ 畫面外 ${lots(up)} 張`);
+    if (dn) el('text', { x: base + 4, y: H - 6 }, `↓ 畫面外 ${lots(dn)} 張`);
+  }
+}
 
 /* ---------- 框選區間 ---------- */
 let sel = null, selMode = false, drag = null, pend = null, dense = null, mkTimes = [];
@@ -579,11 +657,12 @@ function checkDense() {
   if (d !== dense) { dense = d; candle.setMarkers(markers()) }
 }
 let rafId = 0;
-function onView() { cancelAnimationFrame(rafId); rafId = requestAnimationFrame(() => { drawBand(); checkDense() }) }
+function onView() { cancelAnimationFrame(rafId); rafId = requestAnimationFrame(() => { drawBand(); checkDense(); drawProfile() }) }
 new ResizeObserver(onView).observe(chartEl);
 
 const money = n => (n < 0 ? '−' : '') + '$' + fmt(Math.round(Math.abs(n)));
-function renderSel() {
+function renderSel() { onView(); renderSelCard() }
+function renderSelCard() {
   const card = $('#selCard');
   if (!sel) {
     card.hidden = !selMode;
@@ -661,12 +740,15 @@ function renderStats() {
   });
   // 存摺最後一筆之後若又分割／減資，換算成現在的股數與每股成本再算未實現
   const lastRow = list[0], fa = lastRow ? factorAfter(lastRow.date) : 1;
-  const bal = s ? s.bal : 0, avg = sh > 0 ? cost / sh : null, un = last && avg && bal ? (last.close - avg * fa) * bal / fa : null;
+  const bal = s ? s.bal : 0, avg = sh > 0 ? cost / sh : null;
+  posAvg = avg && bal ? { raw: avg, adj: avg * fa } : null;
+  const un = last && avg && bal ? (last.close - avg * fa) * bal / fa : null;
   const sub = t => `<small class="sub">${t}</small>`, r2 = n => Math.round(n * 100) / 100;
   const cells = [['期末餘額', bal ? fmt(bal) + ' 股' + (fa !== 1 ? sub(`分割/減資後 ≈ ${fmt(Math.round(bal / fa))} 股`) : '') : '0'], ['買進', `${nB} 次・${fmt(bq)} 股`], ['賣出', `${nS} 次・${fmt(sq)} 股`],
     ['估算均價', avg ? (fa !== 1 && bal ? fmt(r2(avg * fa)) + sub(`換算後；原始 ${fmt(r2(avg))}`) : fmt(r2(avg))) : '—'], ['估算未實現', un == null ? '—' : `<span class="${un >= 0 ? 'up' : 'down'}">${un >= 0 ? '+' : ''}${fmt(Math.round(un))}</span>`],
     ['估算已實現', nS ? `<span class="${real >= 0 ? 'up' : 'down'}">${real >= 0 ? '+' : ''}${fmt(Math.round(real))}</span>` : '—']];
   $('#stats').innerHTML = cells.map(([a, b]) => `<div><dt>${a}</dt><dd>${b}</dd></div>`).join('');
+  onView();
 }
 
 /* ---------- 股價 CSV / 設定 ---------- */
