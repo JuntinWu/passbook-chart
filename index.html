@@ -40,6 +40,9 @@ aside{border-right:1px solid var(--line);background:var(--panel);display:flex;fl
 section.view{padding:18px max(2.5vw,14px) 40px;display:flex;flex-direction:column;gap:16px}
 .title{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px}
 .title h2{font-size:clamp(28px,4vw,44px);line-height:1.05;margin:0;font-weight:800}
+.title .upd{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:13px;color:var(--mute)}
+.btn.sm{min-height:34px;padding:0 10px;font-size:13px}.btn:disabled{opacity:.5;cursor:wait}
+@media(max-width:600px){.title .upd{margin-left:0;width:100%}}
 .title .nm{font-size:20px;font-weight:700}.title .px{font-size:20px;font-variant-numeric:tabular-nums}
 .up{color:var(--up)}.down{color:var(--down)}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
@@ -120,7 +123,7 @@ aside{position:static;max-height:none;border-right:0;border-bottom:1px solid var
     <div id="list"><p class="empty">尚未匯入交易紀錄</p></div>
   </aside>
   <section class="view">
-    <div class="title"><h2 id="tCode">—</h2><span class="nm" id="tName"></span><span class="px" id="tPx"></span></div>
+    <div class="title"><h2 id="tCode">—</h2><span class="nm" id="tName"></span><span class="px" id="tPx"></span><span class="upd"><span id="upd"></span><button class="btn sm" id="bRef" type="button">更新股價</button></span></div>
     <dl class="stats" id="stats"></dl>
     <div class="card">
       <div class="bar">
@@ -353,13 +356,24 @@ const curRows = () => rows.filter(r => r.code === cur);
 function msg(t, s) { const m = $('#cMsg'); if (!t) { m.hidden = true; return } m.hidden = false; m.innerHTML = `<div><b>${t}</b>${s || ''}</div>` }
 
 /* ---------- 股價 ---------- */
-async function loadPrices(code) {
+// 台北時間 14:30 收盤後才算「今天應該有資料」；週末往前推（國定假日靠 30 分鐘節流避免狂打 API）
+function expectedDate() {
+  const d = new Date(Date.now() + 8 * 3600e3);
+  if (d.getUTCHours() * 60 + d.getUTCMinutes() < 14 * 60 + 30) d.setUTCDate(d.getUTCDate() - 1);
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+const lastBar = c => c && c.data && c.data.length ? c.data[c.data.length - 1].time : '';
+const isStale = c => !c.manual && lastBar(c) < expectedDate() && Date.now() - (c.checked || c.t) > 30 * 60e3;
+async function loadPrices(code, force) {
   const pc = priceCode(code), ck = 'px:' + pc, cached = store.get(ck);
   const evs = rows.filter(r => r.code === code).map(r => r.date).sort();
   const start = new Date(evs.length ? evs[0] : Date.now() - 3 * 365 * 864e5);
   start.setMonth(start.getMonth() - 3);
   const startStr = start.toISOString().slice(0, 10);
-  if (cached && (cached.manual || (cached.events && Date.now() - cached.t < 6 * 3600e3 && cached.start <= startStr))) return cached;
+  if (cached && cached.manual) return cached;
+  const reuse = cached && cached.events && cached.start <= startStr && cached.data && cached.data.length;
+  if (reuse && !force && !isStale(cached)) return cached;
   const tok = store.get('pb:tok', '');
   const fm = async (ds, from) => {
     const r = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=${ds}&data_id=${encodeURIComponent(pc)}&start_date=${from}`, tok ? { headers: { Authorization: 'Bearer ' + tok } } : {});
@@ -367,16 +381,20 @@ async function loadPrices(code) {
     if (j.status !== 200 && j.msg !== 'success') throw new Error(j.msg || 'FinMind 回傳錯誤');
     return j.data || [];
   };
-  const [raw, sp, cr] = await Promise.all([fm('TaiwanStockPrice', startStr),
+  // 已有快取就只抓最後一根之後的新資料（含最後一根，盤後修正會覆蓋）
+  const from = reuse ? lastBar(cached) : startStr;
+  const [raw, sp, cr] = await Promise.all([fm('TaiwanStockPrice', from),
     fm('TaiwanStockSplitPrice', '2000-01-01').catch(() => []), fm('TaiwanStockCapitalReductionReferencePrice', '2000-01-01').catch(() => [])]);
-  const data = raw.filter(d => d.open > 0).map(d => ({ time: d.date, open: d.open, high: d.max, low: d.min, close: d.close, volume: d.Trading_Volume }));
+  const fresh = raw.filter(d => d.open > 0).map(d => ({ time: d.date, open: d.open, high: d.max, low: d.min, close: d.close, volume: d.Trading_Volume }));
+  const data = reuse ? [...cached.data.filter(d => d.time < from), ...fresh] : fresh;
+  if (reuse && !fresh.length) data.push(...cached.data.filter(d => d.time >= from));
   if (!data.length) throw new Error('查無股價（權證、已下市或代號錯誤）');
   // 分割／減資事件：f = 事件後參考價 ÷ 事件前收盤，事件日之前的價格乘上 f 即為還原價
   const evts = [
     ...sp.filter(e => e.before_price > 0 && e.after_price > 0).map(e => ({ date: e.date, f: e.after_price / e.before_price, label: e.type || '分割' })),
     ...cr.filter(e => e.ClosingPriceonTheLastTradingDay > 0 && e.PostReductionReferencePrice > 0).map(e => ({ date: e.date, f: e.PostReductionReferencePrice / e.ClosingPriceonTheLastTradingDay, label: '減資' }))
   ].filter(e => Math.abs(e.f - 1) > 0.01).sort((a, b) => a.date.localeCompare(b.date));
-  const out = { t: Date.now(), start: startStr, data, events: evts };
+  const out = { t: Date.now(), checked: Date.now(), start: reuse ? cached.start : startStr, data, events: evts };
   store.set(ck, out);
   return out;
 }
@@ -398,8 +416,36 @@ async function renderChart() {
   msg('');
   pxMap = new Map(prices.map(d => [d.time, d]));
   drawSeries();
-  applyRange(); renderTable(); renderStats(); renderSel(); onView();
+  applyRange(); renderTable(); renderStats(); renderSel(); onView(); updStatus();
 }
+// 頁面開著時：每 10 分鐘、切回分頁時檢查有沒有新收盤價，有就補上，不動目前的縮放位置
+let refreshing = false;
+async function refreshPrices(force) {
+  if (!cur || !chart || !prices.length || refreshing) return;
+  const c = store.get('px:' + priceCode(cur));
+  if (!force && c && !isStale(c)) { updStatus(); return }
+  refreshing = true; $('#bRef').disabled = true; $('#upd').textContent = '檢查新收盤價中…';
+  try {
+    const code = cur, oldLen = prices.length, px = await loadPrices(code, true);
+    if (code !== cur) return;
+    const added = px.data.length - oldLen, lr = chart.timeScale().getVisibleLogicalRange();
+    prices = px.data; events = px.events || []; pxMap = new Map(prices.map(d => [d.time, d]));
+    drawSeries(); renderTable(); renderStats(); renderSel();
+    if (lr && added > 0 && lr.to >= oldLen - 2) chart.timeScale().setVisibleLogicalRange({ from: lr.from + added, to: lr.to + added });
+    if (added > 0) alertMsg(`${priceCode(code)} 新增 ${added} 天收盤價`);
+  } catch (e) { $('#upd').textContent = '更新失敗：' + (e.message === 'Failed to fetch' ? '連不到 FinMind' : e.message); return }
+  finally { refreshing = false; $('#bRef').disabled = false }
+  updStatus();
+}
+function updStatus() {
+  const c = cur && store.get('px:' + priceCode(cur)), el = $('#upd');
+  if (!c || !prices.length) { el.textContent = ''; return }
+  if (c.manual) { el.textContent = '使用手動匯入的股價'; return }
+  const lb = lastBar(c), hm = new Date(c.checked || c.t).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+  el.textContent = `收盤價更新至 ${lb}・${hm} 檢查` + (lb < expectedDate() ? '・等待今日收盤資料' : '');
+}
+setInterval(() => refreshPrices(false), 10 * 60e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshPrices(false) });
 function drawSeries() {
   const on = $('#adjOn').checked;
   const adj = prices.map(d => { const m = on ? factorAfter(d.time) : 1;
@@ -411,6 +457,7 @@ function drawSeries() {
   const n = events.length;
   $('#src').textContent = 'FinMind 開放資料。' + (n ? `${priceCode(cur)} 有 ${n} 次股本異動（${events.map(e => `${e.date} ${e.label} ${ratioText(e.f)}`).join('、')}），${on ? '圖上已還原為現在的股數基準' : '目前顯示原始價格'}；明細與成本計算一律用原始價格，與存摺股數對應。` : '未還原權息。');
 }
+$('#bRef').onclick = () => refreshPrices(true);
 $('#adjOn').onchange = () => { store.set('pb:adj', $('#adjOn').checked); if (prices.length) drawSeries() };
 // 非交易日的異動（例如假日撥轉）對齊到下一個交易日
 function snap(d) { if (pxMap.has(d)) return d; const t = prices.find(p => p.time >= d); return t ? t.time : null }
