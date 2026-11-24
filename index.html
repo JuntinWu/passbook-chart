@@ -241,6 +241,7 @@ if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.clo
 
 let rows = store.get('pb:rows', []);          // 存摺列（由新到舊）
 let meta = store.get('pb:meta', {});
+{ const fs = metaFiles(meta); if (fs.length === 1 && fs[0].broker && rows.some(r => !r.acct)) rows.forEach(r => { if (!r.acct) r.acct = fs[0].broker }) }
 let edits = store.get('pb:edits', {});        // 手動成交價
 let cur = store.get('pb:cur', null);
 let range = -1, prices = [], pxMap = new Map(), events = [], adjMap = new Map();
@@ -267,6 +268,7 @@ $('#bParse').onclick = async () => {
     if (/\.json$/i.test(pickedFile.name)) {
       const j = JSON.parse(await pickedFile.text()); got = j.rows || j; m = j.meta || {};
       if (!Array.isArray(got) || got.some(r => !r || !r.date || !r.code)) throw new Error('JSON 格式不符，請匯入本站匯出的檔案');
+      { const bk = metaFiles(m)[0]?.broker; if (bk && metaFiles(m).length === 1) got.forEach(r => { if (!r.acct) r.acct = bk }) }
       if (j.edits && typeof j.edits === 'object') { edits = { ...edits, ...j.edits }; store.set('pb:edits', edits) }
     } else {
       if (!window.pdfjsLib) throw new Error('PDF 函式庫載入失敗，請確認網路連線');
@@ -276,9 +278,15 @@ $('#bParse').onclick = async () => {
       for (let i = 1; i <= doc.numPages; i++) {
         const tc = await (await doc.getPage(i)).getTextContent();
         pages.push(tc.items.map(o => ({ str: o.str, x: o.transform[4], y: o.transform[5], w: o.width, b: o.transform[1], size: Math.hypot(o.transform[0], o.transform[1]) })));
-        if (i === 1) { const t = tc.items.map(o => o.str).join(' '); m.broker = (t.match(/證券商名稱：(\S+)/) || [])[1]; m.period = (t.match(/查詢期間：(\S+)/) || [])[1] }
+        if (i === 1) {
+          const t = tc.items.map(o => o.str).join('').replace(/\s+/g, '');
+          m.broker = (t.match(/證券商名稱[：:]([^\d：:]+?)(?=交易明細|帳號|查詢期間|列印|$)/) || [])[1];
+          const pm = t.match(/(\d{2,3})年(\d{1,2})月(\d{1,2})日至(\d{2,3})年(\d{1,2})月(\d{1,2})日/);
+          if (pm) { const iso = (y, mo, d) => `${+y + 1911}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`; m.from = iso(pm[1], pm[2], pm[3]); m.to = iso(pm[4], pm[5], pm[6]) }
+        }
       }
       got = parsePassbookPages(pages);
+      if (m.broker) got.forEach(r => r.acct = m.broker);
     }
     if (!got.length) throw new Error('沒有解析到任何交易列，請確認是 e存摺匯出的「證券存摺登摺資料」');
     if ($('#merge').checked && rows.length) {
@@ -286,7 +294,13 @@ $('#bParse').onclick = async () => {
       const add = got.filter(r => !seen.has(sig(r)));
       rows = [...add, ...rows].sort((a, b) => b.date.localeCompare(a.date));
     } else rows = got;
-    meta = { ...meta, ...m };
+    // 每份匯入的檔案都記一筆，標題顯示所有檔案合起來的券商與期間
+    const ds = got.map(r => r.date).sort();
+    const file = { broker: m.broker || null, from: m.from || ds[0], to: m.to || ds[ds.length - 1], n: got.length, at: new Date().toISOString() };
+    const prevFiles = $('#merge').checked ? metaFiles(meta) : [];
+    const newFiles = m.files ? metaFiles(m) : [file];
+    const fk = f => [f.broker, f.from, f.to].join('|'), uniq = new Map([...prevFiles, ...newFiles].map(f => [fk(f), f]));
+    meta = { files: [...uniq.values()] };
     store.set('pb:rows', rows); store.set('pb:meta', meta);
     $('#dImport').close();
     if (!cur || !rows.some(r => r.code === cur)) cur = rows[0].code;
@@ -296,15 +310,34 @@ $('#bParse').onclick = async () => {
   } finally { $('#bParse').textContent = '解析' }
 };
 // 合併時用來判斷重複：同日同代號同摘要同數量同餘額
-const sig = r => [r.date, r.code, r.memo, r.wd, r.dp, r.bal].join('|');
+const sig = r => [r.acct || '', r.date, r.code, r.memo, r.wd, r.dp, r.bal].join('|');
+// 舊版 meta 只有 { broker, period }，轉成檔案清單
+function metaFiles(mt) {
+  if (!mt) return [];
+  if (Array.isArray(mt.files)) return mt.files;
+  if (!mt.broker && !mt.period) return [];
+  const pm = (mt.period || '').match(/(\d{2,3})年(\d{1,2})月(\d{1,2})日至(\d{2,3})年(\d{1,2})月(\d{1,2})日/);
+  const iso = (y, mo, d) => `${+y + 1911}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  return [{ broker: mt.broker, from: pm ? iso(pm[1], pm[2], pm[3]) : null, to: pm ? iso(pm[4], pm[5], pm[6]) : null }];
+}
+function acctLabel() {
+  const fs = metaFiles(meta), brokers = [...new Set(fs.map(f => f.broker).filter(Boolean))];
+  const froms = fs.map(f => f.from).filter(Boolean).sort(), tos = fs.map(f => f.to).filter(Boolean).sort();
+  const ds = rows.map(r => r.date).sort();
+  // 檔案記錄的查詢期間與實際交易日期取聯集（舊資料可能只記到第一份檔案的期間）
+  const a = [froms[0], ds[0]].filter(Boolean).sort()[0], z = [tos[tos.length - 1], ds[ds.length - 1]].filter(Boolean).sort().pop();
+  const roc = d => d ? `${+d.slice(0, 4) - 1911}/${d.slice(5, 7)}/${d.slice(8, 10)}` : '';
+  return [brokers.join('、'), a && z ? `${roc(a)} – ${roc(z)}` : '', fs.length > 1 ? `${fs.length} 份檔案` : '', `${rows.length} 筆異動`].filter(Boolean).join('・');
+}
 
 /* ---------- 持股清單 ---------- */
 function stocks() {
   const m = new Map();
   for (const r of rows) {           // rows 由新到舊，第一筆有餘額的就是最新餘額
-    if (!m.has(r.code)) m.set(r.code, { code: r.code, name: r.name, bal: null, n: 0, last: r.date });
+    if (!m.has(r.code)) m.set(r.code, { code: r.code, name: r.name, bal: null, n: 0, last: r.date, by: new Map() });
     const s = m.get(r.code); s.n++; if (!s.name && r.name) s.name = r.name;
-    if (s.bal == null && r.bal != null) s.bal = r.bal;
+    const k = r.acct || '';   // 多家券商：各自取最新餘額再加總
+    if (r.bal != null && !s.by.has(k)) { s.by.set(k, r.bal); s.bal = [...s.by.values()].reduce((a, b) => a + b, 0) }
   }
   return [...m.values()].sort((a, b) => (b.bal > 0) - (a.bal > 0) || b.last.localeCompare(a.last));
 }
@@ -809,7 +842,7 @@ $('#bClearPx').onclick = () => { Object.keys(localStorage).filter(k => k.startsW
 $('#bClearAll').onclick = () => { ['pb:rows', 'pb:meta', 'pb:edits', 'pb:cur'].forEach(store.del); rows = []; meta = {}; edits = {}; cur = null; $('#setMsg').textContent = '已清除'; renderAll() };
 
 function renderAll() {
-  $('#acct').textContent = rows.length ? `${meta.broker || ''} ${meta.period ? '・' + meta.period : ''}・${rows.length} 筆異動` : '匯入集保 e存摺的「證券存摺登摺資料」PDF，所有資料只留在這台電腦';
+  $('#acct').textContent = rows.length ? acctLabel() : '匯入集保 e存摺的「證券存摺登摺資料」PDF，所有資料只留在這台電腦';
   renderList();
   if (cur) renderChart(); else { renderStats(); $('#tb').innerHTML = ''; }
 }
