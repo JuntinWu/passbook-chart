@@ -8,5 +8,6 @@
 - 「匯出 JSON」可下載交易紀錄與手動成交價，換裝置時用「匯入」讀回
 - 收盤後自動更新：每次開啟、切回分頁、或頁面開著每 10 分鐘，若有新的收盤價（台北 14:30 後）就只補抓新的那幾天
 - 「分價買賣」：在 K 線右側以同一價格軸畫出各價位買進（紅）與賣出（綠）張數，並標出均價線；可配合框選區間
+- 均線：設定裡可開關 MA5／10／20／60／120／240 並自訂顏色，依還原後收盤價計算
 
 單一 `index.html`，不需建置。使用 [pdf.js](https://mozilla.github.io/pdf.js/) 與 [Lightweight Charts](https://www.tradingview.com/lightweight-charts/)。

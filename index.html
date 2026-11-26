@@ -66,6 +66,16 @@ section.view{padding:18px max(2.5vw,14px) 40px;display:flex;flex-direction:colum
 #ptip[hidden]{display:none}#ptip b{font-size:14px}#ptip .r{color:var(--up)}#ptip .g{color:var(--down)}#ptip small{color:var(--mute)}
 #prof text{font:500 11px "Schibsted Grotesk","Noto Sans TC",sans-serif;fill:var(--ink);paint-order:stroke;stroke:var(--panel);stroke-width:3px;stroke-linejoin:round}
 #prof .ax{stroke:var(--line);stroke-width:1}
+#maLeg{position:absolute;left:10px;top:8px;z-index:3;pointer-events:none;display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;font-variant-numeric:tabular-nums;max-width:calc(100% - 200px);text-shadow:0 0 3px var(--panel),0 0 3px var(--panel)}
+#maLeg b{font-weight:700}
+.maset{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0;display:flex;flex-direction:column;gap:8px}
+.maset legend{font-size:13px;color:var(--mute);padding:0 4px}
+#maRows{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px}
+.marow{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--soft);cursor:pointer}
+.marow input[type=checkbox]{width:18px;height:18px;accent-color:var(--acc)}
+.marow b{flex:1;font-variant-numeric:tabular-nums}
+.marow input[type=color]{width:34px;height:28px;padding:0;border:1px solid var(--line);border-radius:6px;background:none;cursor:pointer}
+.maset .btn.sm{align-self:flex-start}
 #selLayer{position:absolute;inset:0;z-index:5;pointer-events:none;touch-action:none}
 #selLayer.on{pointer-events:auto;cursor:crosshair}
 #band{position:absolute;top:0;bottom:0;display:none;pointer-events:none;background:color-mix(in srgb,var(--acc) 11%,transparent);border-inline:2px solid var(--acc)}
@@ -138,7 +148,7 @@ aside{position:static;max-height:none;border-right:0;border-bottom:1px solid var
         <div class="legend"><span><i class="b"></i>買進</span><span><i class="s"></i>賣出</span><span><i class="d"></i>買賣相抵</span><label style="cursor:pointer"><input type="checkbox" id="showOther"> <i class="o"></i>其他異動</label><label style="cursor:pointer"><input type="checkbox" id="adjOn"> 還原分割/減資</label></div>
       </div>
       <div class="selcard" id="selCard" hidden></div>
-      <div id="chart"><svg id="prof" aria-hidden="true"></svg><div id="ptip" hidden></div><div id="selLayer"><div id="band"></div></div><div id="tip"></div><div class="msg" id="cMsg"><div><b>先匯入你的 e存摺</b>點右上「匯入 e存摺 PDF」，輸入 PDF 密碼（身分證字號）即可解析。</div></div></div>
+      <div id="chart"><div id="maLeg" aria-live="off"></div><svg id="prof" aria-hidden="true"></svg><div id="ptip" hidden></div><div id="selLayer"><div id="band"></div></div><div id="tip"></div><div class="msg" id="cMsg"><div><b>先匯入你的 e存摺</b>點右上「匯入 e存摺 PDF」，輸入 PDF 密碼（身分證字號）即可解析。</div></div></div>
     </div>
     <div class="card">
       <div class="bar"><strong>交易明細 <span class="note" id="tbCount" style="display:inline"></span></strong><p class="note">價格欄預設為當日收盤價（存摺不含成交價），點一下即可改成實際成交價</p></div>
@@ -160,6 +170,8 @@ aside{position:static;max-height:none;border-right:0;border-bottom:1px solid var
 
 <dialog id="dSet"><form class="dlg" method="dialog">
   <h3>設定</h3>
+  <fieldset class="maset"><legend>均線（移動平均，依還原後收盤價計算）</legend><div id="maRows"></div>
+    <button class="btn sm" type="button" id="bMaReset">恢復預設</button></fieldset>
   <label class="field">FinMind API Token（選填，免費註冊可提高請求上限）<input id="tok" autocomplete="off" placeholder="不填也能用"></label>
   <div class="row" style="justify-content:flex-start">
     <button class="btn" type="button" id="bExport">複製交易紀錄 JSON</button>
@@ -373,7 +385,10 @@ function makeChart() {
   vol = chart.addHistogramSeries({ priceScaleId: 'v', priceFormat: { type: 'volume' }, lastValueVisible: false, priceLineVisible: false });
   chart.priceScale('v').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
   candle.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.22 } });
+  maSeries = MA_N.map(n => chart.addLineSeries({ lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null }));
+  applyMaStyle();
   chart.subscribeCrosshairMove(p => {
+    drawMaLegend(p.time ? tstr(p.time) : null);
     if (!p.time || !p.point) { tip.style.display = 'none'; return }
     const d = typeof p.time === 'string' ? p.time : `${p.time.year}-${String(p.time.month).padStart(2, '0')}-${String(p.time.day).padStart(2, '0')}`;
     const bar = adjMap.get(d), rawB = pxMap.get(d), ev = curRows().filter(r => r.date === d);
@@ -409,7 +424,7 @@ async function loadPrices(code, force) {
   const pc = priceCode(code), ck = 'px:' + pc, cached = store.get(ck);
   const evs = rows.filter(r => r.code === code).map(r => r.date).sort();
   const start = new Date(evs.length ? evs[0] : Date.now() - 3 * 365 * 864e5);
-  start.setMonth(start.getMonth() - 3);
+  start.setMonth(start.getMonth() - 14);   // 多抓一年多，第一筆交易時 240 日均線就有值
   const startStr = start.toISOString().slice(0, 10);
   if (cached && cached.manual) return cached;
   const reuse = cached && cached.events && cached.start <= startStr && cached.data && cached.data.length;
@@ -492,6 +507,7 @@ function drawSeries() {
     return m === 1 ? d : { time: d.time, open: d.open * m, high: d.high * m, low: d.low * m, close: d.close * m, volume: d.volume / m } });
   adjMap = new Map(adj.map(d => [d.time, d]));
   candle.setData(adj);
+  drawMa(adj);
   vol.setData(adj.map(d => ({ time: d.time, value: d.volume, color: d.close >= d.open ? '#d23a2a40' : '#16935a40' })));
   candle.setMarkers(markers());
   const n = events.length;
@@ -545,6 +561,45 @@ $('#rng').onclick = e => { const b = e.target.closest('button'); if (!b) return;
   range = +b.dataset.r; document.querySelectorAll('#rng button').forEach(x => x.classList.toggle('on', x === b)); applyRange() };
 $('#showOther').onchange = () => candle && candle.setMarkers(markers());
 
+
+
+/* ---------- 均線 ---------- */
+const MA_N = [5, 10, 20, 60, 120, 240];
+const MA_DEF = { 5: ['#e1a400', true], 10: ['#7b61ff', false], 20: ['#2f7de1', true], 60: ['#d4537e', true], 120: ['#1d9e75', false], 240: ['#6d6860', false] };
+let maCfg = Object.fromEntries(MA_N.map(n => [n, { c: MA_DEF[n][0], on: MA_DEF[n][1], ...(store.get('pb:ma', {})[n] || {}) }]));
+let maSeries = [], maVals = {};
+function applyMaStyle() { maSeries.forEach((se, i) => se.applyOptions({ color: maCfg[MA_N[i]].c, visible: maCfg[MA_N[i]].on })); drawMaLegend(null) }
+function drawMa(adj) {
+  maVals = {};
+  MA_N.forEach((n, i) => {
+    const out = [], m = new Map(); let sum = 0;
+    for (let k = 0; k < adj.length; k++) {
+      sum += adj[k].close; if (k >= n) sum -= adj[k - n].close;
+      if (k >= n - 1) { const v = sum / n; out.push({ time: adj[k].time, value: v }); m.set(adj[k].time, v) }
+    }
+    maVals[n] = m;
+    if (maSeries[i]) maSeries[i].setData(out);
+  });
+  drawMaLegend(null);
+}
+function drawMaLegend(t) {
+  const leg = $('#maLeg'); if (!leg) return;
+  const at = t || (prices.length ? prices[prices.length - 1].time : null);
+  leg.innerHTML = MA_N.filter(n => maCfg[n].on).map(n => {
+    const v = at && maVals[n] ? maVals[n].get(at) : null;
+    return `<span style="color:${maCfg[n].c}"><b>MA${n}</b> ${v == null ? '—' : fmt(Math.round(v * 100) / 100)}</span>`;
+  }).join('');
+}
+function saveMa() { store.set('pb:ma', maCfg); applyMaStyle() }
+function renderMaRows() {
+  $('#maRows').innerHTML = MA_N.map(n => `<label class="marow"><input type="checkbox" data-n="${n}" ${maCfg[n].on ? 'checked' : ''}><b>MA${n}</b><input type="color" data-n="${n}" value="${maCfg[n].c}" aria-label="MA${n} 顏色"></label>`).join('');
+}
+$('#maRows').addEventListener('input', e => {
+  const n = e.target.dataset.n; if (!n) return;
+  if (e.target.type === 'checkbox') maCfg[n].on = e.target.checked; else maCfg[n].c = e.target.value;
+  saveMa();
+});
+$('#bMaReset').onclick = () => { maCfg = Object.fromEntries(MA_N.map(n => [n, { c: MA_DEF[n][0], on: MA_DEF[n][1] }])); saveMa(); renderMaRows() };
 
 /* ---------- 分價買賣（價格分布） ---------- */
 let posAvg = null, avgLine = null, profOn = store.get('pb:prof', true);
@@ -825,7 +880,7 @@ $('#bPxOk').onclick = () => {
   store.set('px:' + priceCode(cur), { t: Date.now(), manual: true, start: data[0].time, data });
   $('#dPx').close(); renderChart();
 };
-$('#bSet').onclick = () => { $('#tok').value = store.get('pb:tok', ''); $('#setMsg').textContent = ''; $('#dSet').showModal() };
+$('#bSet').onclick = () => { renderMaRows(); $('#tok').value = store.get('pb:tok', ''); $('#setMsg').textContent = ''; $('#dSet').showModal() };
 $('#bSaveSet').onclick = () => store.set('pb:tok', $('#tok').value.trim());
 // 匯出：交易紀錄＋手動成交價，可再從「匯入」讀回
 const exportData = () => ({ app: 'passbook-chart', version: 1, exportedAt: new Date().toISOString(), meta, edits, rows });
